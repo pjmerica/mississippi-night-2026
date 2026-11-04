@@ -12,3 +12,13 @@ the Senate race (Hyde-Smith vs Colom).
 - `ms_geo.js` (from `build.py`): Mississippi county shapes from us-atlas (Census cartographic boundaries).
 
 Rebuild the inputs: `py build.py` (reads the polling-agg repo's NYT archive and forecast).
+
+## Projection and markets (live job)
+
+Kalshi refuses cross-site browser requests, so prices come from a GitHub Actions job: `night.py` (workflow
+`Mississippi live`, started by hand: `gh workflow run night.yml`, one job runs up to 340 minutes) every 30 s
+reads NYT's count, runs `county_project.py` (polling-agg's projector v1, copied unchanged) from the margin
+model's start (Colom -5.54, sd 6.1, as the desk), reads the Kalshi (SENATEMS-26-D/R) and Polymarket books, and
+writes `live.json` to the orphan branch `live`. The page shows our win chance, the projected final margin with
+its 80% band, the count-only margin, each venue's bid/ask (the cheapest buy of each side: YES on it or NO on the
+other), taker fees, edge after fee, the desk's FLIP rule, and two charts over the night.

@@ -46,6 +46,20 @@ tbody tr:hover td { background: #1a2230; }
 .ctip .kv .gap { grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 3px 0 1px; }
 .ctip .fine { color: var(--faint); margin-top: 5px; font-size: 11.5px; }
 .err { color: #f0b35a; }
+.proj { background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; padding: 10px; display: grid; gap: 8px; }
+.big { display: flex; gap: 8px; }
+.big div { flex: 1; background: #10151d; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.big small { display: block; color: var(--muted); font-size: 11.5px; }
+.big b { font: 600 20px var(--mono); }
+.flip { background: #3b2a10; border: 1px solid #a8741f; color: #f3c46b; border-radius: 6px; padding: 6px 8px; font-weight: 600; }
+.best td { background: #17283d; }
+.wchart { width: 100%; height: auto; display: block; }
+.wchart text { fill: var(--faint); font: 10px var(--sans); }
+.ctitle { color: var(--muted); font-size: 12px; margin: 2px 0 -4px; }
+.clegend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); }
+.clegend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: 3px; }
+#ctip { position: fixed; pointer-events: none; z-index: 20; background: #131922; border: 1px solid #2f3a4a; border-radius: 6px; padding: 7px 9px; font: 12px/1.45 var(--sans); width: 290px; }
+#ctip[hidden] { display: none; }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } aside { max-height: none; } }
 </style>
 </head>
@@ -67,6 +81,7 @@ tbody tr:hover td { background: #1a2230; }
   <aside id="side"></aside>
 </main>
 <div class="legend" id="legend"></div>
+<div id="ctip" class="ctip" hidden></div>
 <script src="ms_bench.js"></script>
 <script src="ms_geo.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/deck.gl@8.9.35/dist.min.js"></script>
@@ -80,6 +95,13 @@ const NYT = "https://static01.nyt.com/elections-assets/pages/data/2026-11-03/res
 const C_D = [74, 144, 232], C_R = [232, 102, 95], OU_FULL = 10, TWO = 0.97, KEY_N = 15;
 const B = window.MS_BENCH, G = window.MS_GEO;
 const ui = { race: "sen", metric: "net", hl: null };
+// Projection + Kalshi/Polymarket: live.json on the branch `live`, written every 30 s by night.py in GitHub Actions
+// (Kalshi refuses cross-site browser requests). raw.githubusercontent first; GitHub's API (60 an hour) when raw's
+// copy is over 90 s old, at most every 100 s. Never steps back to an older pass.
+const LJ_RAW = "https://raw.githubusercontent.com/pjmerica/mississippi-night-2026/live/live.json";
+const LJ_API = "https://api.github.com/repos/pjmerica/mississippi-night-2026/contents/live.json?ref=live";
+let LJ = null, ljApiAt = 0, ljApiOff = 0;
+const C_K = "#e2b84f";
 let LIVE = null, DECK = null, FIT = null, fetchedAt = null, lastErr = null;
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -206,10 +228,93 @@ function layers(rs) {
   ];
 }
 
+const ageS = iso => iso ? Math.round((Date.now() - Date.parse(iso)) / 1000) : null;
+const cents = p => p == null ? "–" : (Math.abs(100 * p - Math.round(100 * p)) > 0.05 ? (100 * p).toFixed(1) : (100 * p).toFixed(0)) + "¢";
+const pctS = p => p == null ? "–" : (100 * p).toFixed(0) + "%";
+
+function chartSvg(id, pts, series, yr, fmtY, band) {
+  // pts: rows with .t; series: [{k, color, dash, label}]; yr: [lo, hi]; band: [loKey, hiKey] or null
+  const W = 380, H = 130, l = 30, r = 6, t = 6, b = 18;
+  const ts = pts.map(p => Date.parse(p.t)), t0 = ts[0], t1 = Math.max(ts[ts.length - 1], t0 + 60000);
+  const X = v => l + (W - l - r) * (v - t0) / (t1 - t0), Y = v => t + (H - t - b) * (1 - (v - yr[0]) / (yr[1] - yr[0]));
+  const mid = id === "wc" ? 50 : 0;
+  let ticks = [0, 25, 50, 75, 100];
+  if (id !== "wc") { const st = (yr[1] - yr[0]) > 24 ? 10 : 5; ticks = []; for (let v = Math.ceil(yr[0] / st) * st; v <= yr[1]; v += st) ticks.push(v); }
+  let g = "";
+  for (const v of ticks) g += `<line x1="${l}" x2="${W - r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${v === mid ? "#46536a" : "#212a37"}" stroke-width="1"/><text x="${l - 4}" y="${Y(v) + 3}" text-anchor="end">${fmtY(v)}</text>`;
+  const fmtT = v => new Date(v).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  g += `<text x="${l}" y="${H - 4}">${fmtT(t0)}</text><text x="${W - r}" y="${H - 4}" text-anchor="end">${fmtT(t1)}</text>`;
+  if (band) {
+    const ok = pts.filter(p => p[band[0]] != null);
+    if (ok.length > 1) g += `<path d="M${ok.map(p => X(Date.parse(p.t)) + "," + Y(Math.min(yr[1], p[band[1]]))).join("L")}L${ok.slice().reverse().map(p => X(Date.parse(p.t)) + "," + Y(Math.max(yr[0], p[band[0]]))).join("L")}Z" fill="rgba(74,144,232,.16)"/>`;
+  }
+  for (const s of series) {
+    let d = "", pen = false;
+    for (const p of pts) {
+      const v = p[s.k];
+      if (v == null) { pen = false; continue; }
+      d += (pen ? "L" : "M") + X(Date.parse(p.t)).toFixed(1) + "," + Y(Math.max(yr[0], Math.min(yr[1], v))).toFixed(1); pen = true;
+    }
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" ${s.dash ? `stroke-dasharray="${s.dash}"` : ""}/>`;
+  }
+  g += `<line class="xh" x1="0" x2="0" y1="${t}" y2="${H - b}" stroke="#8e99aa" stroke-width="1" visibility="hidden"/>`;
+  g += `<rect x="${l}" y="${t}" width="${W - l - r}" height="${H - t - b}" fill="transparent" data-chart="${id}" data-l="${l}" data-w="${W - l - r}" data-t0="${t0}" data-t1="${t1}"/>`;
+  return `<svg class="wchart" id="${id}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${id === "wc" ? "Win chance over time" : "Margin over time"}">${g}</svg>` +
+    `<div class="clegend">${series.map(s => `<span><i style="background:${s.color}"></i>${s.label}${s.dash ? " (dashed)" : ""}</span>`).join("")}` +
+    `${band ? `<span><i style="background:rgba(74,144,232,.35);height:8px;vertical-align:0"></i>80% band</span>` : ""}</div>`;
+}
+
+function projHtml() {
+  const j = LJ;
+  if (!j) return `<div class="proj"><b>Projection & markets</b><span class="note">Waiting for the live job (live.json)…</span></div>`;
+  const dn = last(j.d), rn = last(j.r), age = ageS(j.generated);
+  const leadM = m => m == null ? "–" : Math.abs(m) < 0.05 ? "tied" : `${m > 0 ? dn : rn} +${Math.abs(m).toFixed(1)}`;
+  let h = `<div class="proj"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>Projection & markets</b>` +
+    `<span class="note ${age > 120 ? "err" : ""}">${age == null ? "" : age > 120 ? "stale: " + Math.round(age / 60) + " min old" : "updated " + age + " s ago"}</span></div>`;
+  if (j.flip && j.best) h += `<div class="flip">FLIP: buy ${j.best.side === "D" ? esc(dn) : esc(rn)} on ${j.best.venue === "kalshi" ? "Kalshi" : "Polymarket"} at ${cents(j.best.ask)} (our chance ${pctS(j.best.side === "D" ? j.v1.p : 1 - j.v1.p)})</div>`;
+  if (j.v1) {
+    const lo = j.v1.mu - 1.2816 * j.v1.sd, hi = j.v1.mu + 1.2816 * j.v1.sd;
+    h += `<div class="big"><div><small>Our chance: ${esc(dn)}</small><b class="pos">${pctS(j.v1.p)}</b></div><div><small>${esc(rn)}</small><b class="neg">${pctS(1 - j.v1.p)}</b></div>` +
+      `<div><small>Kalshi ${esc(dn)} (ask)</small><b style="color:${C_K}">${cents(j.kalshi && j.kalshi.D && j.kalshi.D.ask)}</b></div></div>`;
+    h += `<div class="kv"><span>Projected final margin</span><b class="${cls(j.v1.mu)}">${leadM(j.v1.mu)}</b>` +
+      `<span>80% band</span><b>${leadM(lo)} to ${leadM(hi)}</b>` +
+      `<span>Counted votes alone point to</span><b class="${cls(j.implied && j.implied.mu)}">${j.implied ? leadM(j.implied.mu) + " ± " + j.implied.sd.toFixed(1) : "–"}</b>` +
+      `<span>Our model before the count</span><b class="${cls(j.model.margin)}">${leadM(j.model.margin)} (± ${j.model.sd})</b>` +
+      `<span>Votes still to count (est.)</span><b>${fmtInt(j.v1.remaining)}</b></div>`;
+  } else h += `<span class="note">No count yet: the projector starts with the first votes.</span>`;
+  h += `<table><thead><tr><th>Buy</th><th>Venue</th><th>Bid</th><th>Ask</th><th>Fee</th><th>Ours</th><th>Edge</th></tr></thead><tbody>`;
+  for (const [vk, vn] of [["kalshi", "Kalshi"], ["polymarket", "Polymarket"]]) for (const side of ["D", "R"]) {
+    const bk = (j[vk] || {})[side] || {}, tr = (j.trades || []).find(x => x.venue === vk && x.side === side);
+    const ours = j.v1 ? (side === "D" ? j.v1.p : 1 - j.v1.p) : null;
+    const isBest = j.best && j.best.venue === vk && j.best.side === side && j.best.edge > 0;
+    h += `<tr class="${isBest ? "best" : ""}" title="${esc(bk.how || "")}${bk.ask_size ? " · " + fmtInt(bk.ask_size) + " contracts at the ask" : ""}">` +
+      `<td class="${side === "D" ? "pos" : "neg"}">${esc(side === "D" ? dn : rn)}</td><td style="font-family:var(--sans)">${vn}</td>` +
+      `<td>${cents(bk.bid)}</td><td>${cents(bk.ask)}</td><td>${tr ? cents(tr.fee) : "–"}</td><td>${pctS(ours)}</td>` +
+      `<td class="${tr && tr.edge > 0 ? "pos" : ""}" style="${tr && tr.edge <= 0 ? "color:var(--faint)" : ""}">${tr ? (tr.edge >= 0 ? "+" : "−") + (100 * Math.abs(tr.edge)).toFixed(1) + "¢" : "–"}</td></tr>`;
+  }
+  h += `</tbody></table><p class="note" style="margin:0">Bid = the best price someone will pay for that side's YES. Ask = the cheapest way to buy that side (YES on it, or NO on the other; hover a row for which and how many). Fee = taker fee per contract. Ours = our projection's chance. Edge = ours − ask − fee, per $1 contract; the best positive edge is shaded. FLIP (the desk's rule): our chance 45%+, edge 5¢+, ask 40¢ or less, 20%+ counted.</p>`;
+  const hs = (j.hist || []).filter(p => p.p != null || p.ka != null);
+  if (hs.length > 1) {
+    const pts = hs.map(p => ({ t: p.t, p: p.p != null ? 100 * p.p : null, ka: p.ka != null ? 100 * p.ka : null, pm: p.pm != null ? 100 * p.pm : null,
+      mu: p.mu, imp: p.imp, m: p.m, lo: p.mu != null ? p.mu - 1.2816 * p.sd : null, hi: p.mu != null ? p.mu + 1.2816 * p.sd : null, pct: p.pct }));
+    window.__PTS = pts;
+    h += `<div class="ctitle">${esc(dn)}'s chance: our projection vs the market</div>` + chartSvg("wc", pts, [
+      { k: "p", color: "#4a90e8", label: "Our projection" }, { k: "ka", color: C_K, label: "Kalshi ask" },
+      { k: "pm", color: "#b48ae6", dash: "4 3", label: "Polymarket ask" }], [0, 100], v => v + "%", null);
+    const vals = pts.flatMap(p => [p.lo, p.hi, p.m, p.imp]).filter(v => v != null);
+    const lo = Math.max(-40, Math.floor(Math.min(-5, ...vals) / 5) * 5), hi = Math.min(40, Math.ceil(Math.max(5, ...vals) / 5) * 5);
+    h += `<div class="ctitle">Margin, points (+ = ${esc(dn)} ahead): projected vs counted</div>` + chartSvg("mc", pts, [
+      { k: "mu", color: "#4a90e8", label: "Projected final" }, { k: "imp", color: "#7fb3f0", dash: "2 3", label: "Counted votes alone point to" },
+      { k: "m", color: "#c9d1dc", label: "Margin so far" }], [lo, hi], v => (v > 0 ? "+" : "") + v, ["lo", "hi"]);
+  }
+  if (j.errors && Object.keys(j.errors).length) h += `<p class="note err" style="margin:0">${esc(Object.values(j.errors).join(" · "))}</p>`;
+  return h + `</div>`;
+}
+
 function renderSide(rs) {
   const cfg = B[ui.race], s = summary(ui.race, rs), st = s.st, dn = last(cfg.model.d), rn = last(cfg.model.r);
   const m = st && st.dv + st.rv ? 100 * (st.dv - st.rv) / st.tot : null;
-  let h = `<h3>Mississippi ${esc(cfg.label)}: ${esc(cfg.model.d)} vs ${esc(cfg.model.r)}</h3><div class="kv">`;
+  let h = `<h3>Mississippi ${esc(cfg.label)}: ${esc(cfg.model.d)} vs ${esc(cfg.model.r)}</h3>` + projHtml() + `<h4>The count vs our model</h4><div class="kv">`;
   h += `<span>Counted</span><b>${st ? st.eevp.toFixed(0) + "% · " + fmtInt(st.tot) + " votes" : "–"}</b>`;
   h += `<span>Margin now</span><b class="${cls(m)}">${lead(m, cfg)}</b>`;
   h += `<span>Our model (before the count)</span><b class="${cls(cfg.model.d_margin)}">${lead(cfg.model.d_margin, cfg)}</b>`;
@@ -228,7 +333,7 @@ function renderSide(rs) {
       `<td class="${c.dev == null ? "" : cls(c.dev)}">${c.dev == null ? "–" : (c.dev >= 0 ? "+" : "−") + Math.abs(c.dev).toFixed(1)}</td>` +
       `<td class="${c.net == null ? "" : cls(c.net)}">${c.net == null ? "–" : (c.net >= 0 ? "+" : "−") + fmtInt(Math.abs(c.net))}</td><td>${fmtInt(c.left)}</td></tr>`;
   }
-  h += `</tbody></table><p class="note" style="margin:0">Separate from the data desk. Count: NYT, every 60 s. Model: the margin model's 2026 forecast.</p>`;
+  h += `</tbody></table><p class="note" style="margin:0">Separate from the data desk. Count: NYT, every 60 s. Model: the margin model's 2026 forecast. Projection: polling-agg's county projector (v1), run every 30 s in this repo's GitHub Actions job; its band runs wide early in the count.</p>`;
   document.getElementById("side").innerHTML = h;
 }
 
@@ -266,8 +371,49 @@ document.getElementById("metric").addEventListener("change", e => { ui.metric = 
 document.getElementById("side").addEventListener("mouseover", e => { const t = e.target.closest("tr[data-f]"); if (t && ui.hl !== t.dataset.f) { ui.hl = t.dataset.f; render(false); } });
 document.getElementById("side").addEventListener("mouseleave", () => { if (ui.hl) { ui.hl = null; render(false); } });
 window.addEventListener("resize", () => { if (DECK) { FIT = fit(); DECK.setProps({ initialViewState: { ...FIT, minZoom: -3, maxZoom: 9 } }); } });
+const genOf = j => j ? Date.parse(j.generated) || 0 : 0;
+async function refreshLive() {
+  let j = null;
+  try { const r = await fetch(LJ_RAW + "?t=" + Date.now(), { cache: "no-store" }); if (r.ok) j = await r.json(); } catch (e) { /* the API next */ }
+  if ((!j || Date.now() - genOf(j) > 90000) && Date.now() > ljApiOff && Date.now() - ljApiAt > 100000) {
+    ljApiAt = Date.now();
+    try {
+      const r = await fetch(LJ_API, { headers: { Accept: "application/vnd.github.raw" }, cache: "no-cache" });
+      if (r.status === 403 || r.status === 429) ljApiOff = Date.now() + 600000;
+      if (r.ok) { const a = await r.json(); if (!j || genOf(a) > genOf(j)) j = a; }
+    } catch (e) { /* keep raw's copy */ }
+  }
+  if (j && genOf(j) >= genOf(LJ)) LJ = j;
+  render(false);
+}
+// chart crosshair + tooltip
+document.getElementById("side").addEventListener("mousemove", e => {
+  const tip = document.getElementById("ctip"), rect = e.target.closest ? e.target.closest("rect[data-chart]") : null;
+  document.querySelectorAll(".wchart .xh").forEach(x => x.setAttribute("visibility", "hidden"));
+  if (!rect || !window.__PTS) { tip.hidden = true; return; }
+  const svg = rect.ownerSVGElement, bb = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
+  const xv = (e.clientX - bb.left) * vb.width / bb.width, l = +rect.dataset.l, w = +rect.dataset.w, t0 = +rect.dataset.t0, t1 = +rect.dataset.t1;
+  const tv = t0 + (t1 - t0) * Math.max(0, Math.min(1, (xv - l) / w));
+  let best = window.__PTS[0];
+  for (const p of window.__PTS) if (Math.abs(Date.parse(p.t) - tv) < Math.abs(Date.parse(best.t) - tv)) best = p;
+  const x = l + w * (Date.parse(best.t) - t0) / (t1 - t0), xh = svg.querySelector(".xh");
+  xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("visibility", "visible");
+  const dn = last(LJ.d), rn = last(LJ.r), f = v => v == null ? "–" : v.toFixed(0) + "%";
+  const lm = m => m == null ? "–" : Math.abs(m) < 0.05 ? "tied" : `${m > 0 ? dn : rn} +${Math.abs(m).toFixed(1)}`;
+  tip.innerHTML = `<b>${etTime(new Date(best.t))}</b> · ${best.pct == null ? "–" : best.pct.toFixed(0)}% counted<div class="kv" style="margin-top:4px">` +
+    `<span>Our chance (${esc(dn)})</span><b class="pos">${f(best.p)}</b><span>Kalshi ask (${esc(dn)})</span><b style="color:${C_K}">${f(best.ka)}</b><span>Polymarket ask</span><b>${f(best.pm)}</b>` +
+    `<span>Projected final</span><b>${lm(best.mu)}</b><span>80% band</span><b>${best.lo == null ? "–" : lm(best.lo) + " to " + lm(best.hi)}</b>` +
+    `<span>Counted alone</span><b>${lm(best.imp)}</b><span>Margin so far</span><b>${lm(best.m)}</b></div>`;
+  tip.hidden = false;
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 305) + "px";
+  tip.style.top = Math.min(e.clientY + 12, innerHeight - 200) + "px";
+});
+document.getElementById("side").addEventListener("mouseleave", () => { document.getElementById("ctip").hidden = true; });
 refresh();
+refreshLive();
 setInterval(refresh, 60000);
+setInterval(refreshLive, 30000);
+
 </script>
 </body>
 </html>
