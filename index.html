@@ -270,7 +270,7 @@ function projHtml() {
   const dn = last(j.d), rn = last(j.r), age = ageS(j.generated);
   const leadM = m => m == null ? "–" : Math.abs(m) < 0.05 ? "tied" : `${m > 0 ? dn : rn} +${Math.abs(m).toFixed(1)}`;
   let h = `<div class="proj"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>Projection & markets</b>` +
-    `<span class="note ${age > 120 ? "err" : ""}">${age == null ? "" : age > 120 ? "stale: " + Math.round(age / 60) + " min old" : "updated " + age + " s ago"}</span></div>`;
+    `<span class="note ${age > 300 ? "err" : ""}">${age == null ? "" : age > 300 ? "stale: " + Math.round(age / 60) + " min old" : "updated " + age + " s ago"}</span></div>`;
   if (j.flip && j.best) h += `<div class="flip">FLIP: buy ${j.best.side === "D" ? esc(dn) : esc(rn)} on ${j.best.venue === "kalshi" ? "Kalshi" : "Polymarket"} at ${cents(j.best.ask)} (our chance ${pctS(j.best.side === "D" ? j.v1.p : 1 - j.v1.p)})</div>`;
   if (j.v1) {
     const lo = j.v1.mu - 1.2816 * j.v1.sd, hi = j.v1.mu + 1.2816 * j.v1.sd;

@@ -32,7 +32,7 @@ K_MKT = {"D": "SENATEMS-26-D", "R": "SENATEMS-26-R"}
 P_SLUG = "mississippi-senate-election-winner"
 P_NAME = {"D": "Colom", "R": "Hyde-Smith"}
 MODEL_SD = 6.1
-PASS = 30
+PASS = 60           # was 30 on the night; weeks of passes through the late count
 FLIP_MIN_P, FLIP_MIN_EDGE, FLIP_MAX_ASK, FLIP_MIN_PCT = 0.45, 0.05, 0.40, 20.0
 UA = {"User-Agent": "mississippi-night-2026 (github.com/pjmerica/mississippi-night-2026)"}
 
@@ -236,11 +236,14 @@ def main():
                     and best["ask"] <= FLIP_MAX_ASK and pct >= FLIP_MIN_PCT)
         margin = 100 * (st["d"] - st["r"]) / st["total"] if st and st["total"] else None
         kd = (kal or {}).get("D") or {}
-        hist.append(dict(t=now, pct=r_(pct, 1), m=r_(margin, 2), mu=r_(v1["mu"], 2) if v1 else None,
+        row = (dict(t=now, pct=r_(pct, 1), m=r_(margin, 2), mu=r_(v1["mu"], 2) if v1 else None,
                          sd=r_(v1["sd"], 2) if v1 else None, p=r_(p), imp=r_(imp[0], 2) if imp and imp[0] is not None else None,
                          kb=kd.get("bid"), ka=kd.get("ask"),
                          pm=r_(((poly or {}).get("D") or {}).get("ask"))))
-        hist = hist[-900:]
+        # a row only when something moved, kept for the whole late count (was the last 900 passes: 7.5 hours)
+        if not hist or any(hist[-1].get(k) != row.get(k) for k in row if k != "t"):
+            hist.append(row)
+        hist = hist[-20000:]
         data = dict(generated=now, race="MS-Sen", d=b["model"]["d"], r=b["model"]["r"], model=dict(margin=model, sd=MODEL_SD),
                     nyt=dict(pct=r_(pct, 1), margin=r_(margin, 2), votes=st["total"] if st else 0, updated=count["updated"]),
                     v1=dict(mu=r_(v1["mu"], 2), sd=r_(v1["sd"], 2), p=r_(p), shift=r_(v1["shift"]),

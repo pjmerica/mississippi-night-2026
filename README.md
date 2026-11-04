@@ -22,3 +22,9 @@ model's start (Colom -5.54, sd 6.1, as the desk), reads the Kalshi (SENATEMS-26-
 writes `live.json` to the orphan branch `live`. The page shows our win chance, the projected final margin with
 its 80% band, the count-only margin, each venue's bid/ask (the cheapest buy of each side: YES on it or NO on the
 other), taker fees, edge after fee, the desk's FLIP rule, and two charts over the night.
+
+## Late count
+
+The job runs through Dec 14 (a pass every 60 s; each job dispatches the next, and a cron restarts it if one dies). `live.json`
+keeps a history row whenever the count, projection or a price moved. The raw NYT file for every change is recorded by
+polling-agg's cloud job in the release `election-night-2026`.
