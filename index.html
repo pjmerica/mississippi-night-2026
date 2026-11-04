@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mississippi election night 2026: counties vs our model</title>
+<style>
+:root {
+  --bg: #0c1016; --panel: #131922; --panel2: #18202b; --line: #232c39; --line2: #2f3a4a;
+  --text: #e7ebf1; --muted: #8e99aa; --faint: #5d687a; --dem: #4a90e8; --rep: #e8665f;
+  --mono: "Cascadia Mono", "SF Mono", Consolas, ui-monospace, monospace;
+  --sans: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.42 var(--sans); font-variant-numeric: tabular-nums; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+h1 { font-size: 18px; margin: 0; }
+.chips { display: flex; gap: 6px; }
+button, select { background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+button[aria-pressed="true"] { background: #2a3550; border-color: #5a6a8a; }
+.spacer { flex: 1; }
+.note { color: var(--muted); font-size: 12.5px; }
+.status { font: 12px var(--mono); color: var(--muted); }
+.status b { color: var(--text); font-weight: 500; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 410px; gap: 10px; padding: 10px 16px 16px; }
+#deckmap { position: relative; height: calc(100vh - 150px); min-height: 520px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: radial-gradient(ellipse at 50% 40%, #151c27, #0a0d12); }
+aside { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-y: auto; max-height: calc(100vh - 150px); min-height: 520px; font-size: 12.5px; display: grid; gap: 10px; align-content: start; }
+aside h3 { margin: 0; font-size: 15px; }
+aside h4 { margin: 4px 0 0; font-size: 13.5px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+.kv span { color: var(--muted); }
+.kv b { font-family: var(--mono); font-size: 12.5px; font-weight: 500; text-align: right; }
+.pos { color: var(--dem) !important; } .neg { color: var(--rep) !important; }
+.cbar { height: 6px; background: #2a3342; border-radius: 3px; overflow: hidden; margin: 2px 0 4px; }
+.cbar i { display: block; height: 100%; background: #c9d1dc; }
+table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+th { color: var(--faint); font-weight: 500; text-align: right; padding: 2px 3px; border-bottom: 1px solid var(--line); }
+td { font-family: var(--mono); text-align: right; padding: 2px 3px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; font-family: var(--sans); }
+tbody tr:hover td { background: #1a2230; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); padding: 0 16px 14px; }
+.legend i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.ctip { font: 12.5px/1.45 var(--sans); }
+.ctip h5 { margin: 0; font-size: 14px; }
+.ctip .sub { color: var(--muted); margin-bottom: 5px; }
+.ctip .kv .gap { grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 3px 0 1px; }
+.ctip .fine { color: var(--faint); margin-top: 5px; font-size: 11.5px; }
+.err { color: #f0b35a; }
+@media (max-width: 1000px) { main { grid-template-columns: 1fr; } aside { max-height: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mississippi · counties vs our model</h1>
+  <div class="chips" id="races"></div>
+  <label class="note" for="metric">Columns</label>
+  <select id="metric">
+    <option value="net">Net votes vs expected</option>
+    <option value="pts">Points over/under</option>
+    <option value="left">Votes still out</option>
+  </select>
+  <div class="spacer"></div>
+  <div class="status" id="status">loading…</div>
+</header>
+<main>
+  <div id="deckmap" aria-label="3D map of Mississippi counties: over/under against our model"></div>
+  <aside id="side"></aside>
+</main>
+<div class="legend" id="legend"></div>
+<script src="ms_bench.js"></script>
+<script src="ms_geo.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/deck.gl@8.9.35/dist.min.js"></script>
+<script>
+"use strict";
+/* Mississippi only, separate from the data desk. The count comes straight from NYT's Mississippi page (results-mississippi.json,
+   CORS open) every 60 s; the benchmarks (ms_bench.js, build.py) use the desk's method: each county's lean from the
+   2024 presidential race and the seat's comparable race, shifted uniformly so the state lands on the margin
+   model's 2026 margin. Over/under = the county's counted two-party Democratic share minus that expectation. */
+const NYT = "https://static01.nyt.com/elections-assets/pages/data/2026-11-03/results-mississippi.json";
+const C_D = [74, 144, 232], C_R = [232, 102, 95], OU_FULL = 10, TWO = 0.97, KEY_N = 15;
+const B = window.MS_BENCH, G = window.MS_GEO;
+const ui = { race: "sen", metric: "net", hl: null };
+let LIVE = null, DECK = null, FIT = null, fetchedAt = null, lastErr = null;
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtInt = n => Math.round(n).toLocaleString("en-US");
+const last = s => String(s).split(" ").slice(-1)[0];
+const expit = x => 1 / (1 + Math.exp(-x)), logit = p => Math.log(p / (1 - p));
+const etTime = d => d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", second: "2-digit" }) + " ET";
+
+function parse(d) {
+  const out = {};
+  for (const [key, cfg] of Object.entries(B)) {
+    const r = d.races.find(x => x.office === cfg.office && x.race_type_id === "G") || d.races.find(x => x.office === cfg.office);
+    if (!r) continue;
+    const pty = Object.fromEntries(Object.entries(r.candidate_metadata).map(([k, v]) => [k, v.party.nyt_id]));
+    const units = {};
+    let st = null;
+    for (const u of r.reporting_units) {
+      let dv = 0, rv = 0, tot = 0;
+      for (const c of u.candidates) { const v = (c.votes || {}).total || 0; tot += v; if (pty[c.nyt_id] === "DEM") dv += v; else if (pty[c.nyt_id] === "GOP") rv += v; }
+      const rec = { dv, rv, tot, exp: u.total_expected_vote || 0, eevp: u.eevp || 0 };
+      if (u.level === "state") st = rec;
+      else if (u.level === "county") units["28" + String(u.fips_county).padStart(3, "0")] = rec;
+    }
+    out[key] = { st, units, updated: r.updated_at };
+  }
+  return out;
+}
+
+function rows(key) {
+  const cfg = B[key], lv = LIVE && LIVE[key];
+  return cfg.counties.map(c => {
+    const u = lv && lv.units[c.f] || { dv: 0, rv: 0, tot: 0, exp: 0, eevp: 0 };
+    const two = u.dv + u.rv, share = two >= 50 ? u.dv / two : null;
+    const expected = Math.max(u.exp || c.vt, u.tot);
+    return { ...c, dv: u.dv, rv: u.rv, votes: u.tot, pct: u.eevp || (expected ? 100 * u.tot / expected : 0),
+      share, dev: share != null ? 100 * (share - c.exp) : null,
+      net: share != null ? (u.dv - u.rv) - (2 * c.exp - 1) * two : null,
+      left: Math.max(expected - u.tot, 0), nexp: u.exp || null };
+  });
+}
+
+function summary(key, rs) {
+  const cfg = B[key], st = LIVE && LIVE[key] && LIVE[key].st;
+  let num = 0, den = 0, net = 0;
+  for (const c of rs) if (c.share != null) {
+    const v = c.dv + c.rv;
+    num += v * (logit(Math.min(Math.max(c.share, 1e-4), 1 - 1e-4)) - c.L); den += v; net += c.net;
+  }
+  const s = den ? num / den : null;      // the uniform shift the counted counties point to (desk's count-only shift)
+  const implied = s == null ? null : 100 * TWO * (2 * rs.reduce((a, c) => a + c.w * expit(c.L + s), 0) - 1);
+  return { st, implied, net, n: rs.filter(c => c.share != null).length, done: rs.filter(c => c.pct >= 95).length };
+}
+
+function lead(m, cfg) { return m == null ? "–" : Math.abs(m) < 0.05 ? "tied" : `${m > 0 ? last(cfg.model.d) : last(cfg.model.r)} +${Math.abs(m).toFixed(1)}`; }
+const cls = v => v > 0 ? "pos" : v < 0 ? "neg" : "";
+
+function tipHtml(c, cfg) {
+  const pc = v => v == null ? "–" : (100 * v).toFixed(1) + "%";
+  const dn = last(cfg.model.d), rn = last(cfg.model.r);
+  let h = `<h5>${esc(c.n)}</h5><div class="sub">Mississippi ${esc(cfg.label)} · ${pc(c.w)} of the state's vote</div>`;
+  h += `<div class="kv"><span>Counted</span><b>${c.pct.toFixed(0)}% · ${fmtInt(c.votes)} of ~${fmtInt(c.votes + c.left)}</b></div>`;
+  h += `<div class="cbar"><i style="width:${Math.min(100, c.pct).toFixed(1)}%"></i></div><div class="kv">`;
+  if (c.share != null) {
+    h += `<span>${esc(dn)}</span><b>${fmtInt(c.dv)} · ${pc(c.share)}</b><span>${esc(rn)}</span><b>${fmtInt(c.rv)} · ${pc(1 - c.share)}</b>`;
+    h += `<span>Margin so far</span><b class="${cls(2 * c.share - 1)}">${lead(100 * (2 * c.share - 1), cfg)}</b>`;
+  } else h += `<span>Votes</span><b>${c.votes ? "too few to read" : "not reporting yet"}</b>`;
+  h += `<i class="gap"></i><span>Expected (our model)</span><b>${lead(100 * (2 * c.exp - 1), cfg)}</b>`;
+  h += `<span>Tie statewide needs</span><b>${esc(dn)} ${pc(c.tie)}</b>`;
+  if (c.dev != null) {
+    h += `<span>Over/under</span><b class="${cls(c.dev)}">${Math.abs(c.dev) < 0.5 ? "as expected" : (c.dev > 0 ? esc(dn) : esc(rn)) + " +" + Math.abs(c.dev).toFixed(1) + " pts"}</b>`;
+    h += `<span>Net vs expected</span><b class="${cls(c.net)}">${(c.net > 0 ? esc(dn) : esc(rn)) + " +" + fmtInt(Math.abs(c.net))} votes</b>`;
+  }
+  h += `<span>Votes left</span><b>~${fmtInt(c.left)}</b><i class="gap"></i>`;
+  for (const [lab, m] of Object.entries(c.past)) h += `<span>${esc(lab)}</span><b class="${cls(m)}">${m > 0 ? "D" : "R"} +${Math.abs(m).toFixed(1)}</b>`;
+  h += `<span>Turnout ${esc(cfg.turnout)}${c.nexp ? " / now (NYT)" : ""}</span><b>${fmtInt(c.vt)}${c.nexp ? " / " + fmtInt(c.nexp) : ""}</b></div>`;
+  h += `<div class="fine">Shares are two-party. Expected: the county's lean (${esc(cfg.bases.join(" + "))}), shifted so the state lands on our model (${lead(cfg.model.d_margin, cfg)}).` +
+    (c.share != null && c.pct < 95 ? " Part-counted: absentee and election-day batches can lean differently." : "") + `</div>`;
+  return h;
+}
+
+function fill(c) {
+  if (c.dev == null) return [34, 41, 52, 235];
+  const t = Math.max(-1, Math.min(1, c.dev / OU_FULL)), k = Math.sqrt(Math.abs(t)), base = [64, 70, 84], tgt = t > 0 ? C_D : C_R;
+  const a = Math.round(255 * Math.min(1, 0.45 + 0.55 * c.pct / 95));
+  return [0, 1, 2].map(i => Math.round(base[i] + (tgt[i] - base[i]) * k)).concat([a]);
+}
+const metricOf = c => ui.metric === "left" ? c.left : ui.metric === "pts" ? c.dev : c.net;
+
+function fit() {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const r of G.outline) for (const [x, y] of r) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const el = document.getElementById("deckmap"), w = x1 - x0, h = y1 - y0;
+  const zoom = Math.log2(Math.min(el.clientWidth / (w * 1.1), el.clientHeight / (h * 1.35)));
+  return { target: [(x0 + x1) / 2, (y0 + y1) / 2 + h * 0.04, 0], zoom, rotationX: 48, rotationOrbit: -12, size: Math.max(w, h) };
+}
+
+function centroid(r) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < r.length; i++) { const [x0, y0] = r[i], [x1, y1] = r[(i + 1) % r.length], f = x0 * y1 - x1 * y0; a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f; }
+  return a ? [cx / (3 * a), cy / (3 * a)] : r[0];
+}
+const CENT = Object.fromEntries(Object.entries(G.counties).map(([f, rings]) => {
+  const big = rings.reduce((m, r) => r.length > m.length ? r : m, rings[0]); return [f, centroid(big)];
+}));
+
+function layers(rs) {
+  const cfg = B[ui.race], L = window.deck, polys = [];
+  for (const c of rs) for (const ring of G.counties[c.f] || []) polys.push({ ring, c });
+  const cols = rs.filter(c => { const v = metricOf(c); return v != null && (ui.metric === "left" ? v > 0 : c.votes > 0); });
+  const max = Math.max(1e-9, ...cols.map(c => Math.abs(metricOf(c))));
+  const H = FIT.size * 0.55, radius = FIT.size / 70;
+  return [
+    new L.PathLayer({ id: "nb", data: G.neighbours, getPath: d => d.concat([d[0]]), getColor: [70, 80, 96, 140], widthUnits: "pixels", getWidth: 1 }),
+    new L.PolygonLayer({ id: "counties", data: polys, getPolygon: d => d.ring, pickable: true, stroked: true, filled: true,
+      getFillColor: d => fill(d.c), getLineColor: d => d.c.f === ui.hl ? [240, 244, 250, 255] : [12, 16, 22, 255],
+      lineWidthUnits: "pixels", getLineWidth: d => d.c.f === ui.hl ? 3 : 0.6,
+      updateTriggers: { getFillColor: [fetchedAt, ui.race], getLineColor: [ui.hl], getLineWidth: [ui.hl] } }),
+    new L.ColumnLayer({ id: "columns", data: cols, diskResolution: 14, radius, extruded: true, pickable: true,
+      getPosition: c => CENT[c.f], getElevation: c => Math.abs(metricOf(c)) / max * H,
+      getFillColor: c => ui.metric === "left" ? [200, 208, 220, 220] : (metricOf(c) >= 0 ? [...C_D, 240] : [...C_R, 240]),
+      material: { ambient: 0.45, diffuse: 0.6, shininess: 24 },
+      updateTriggers: { getElevation: [ui.metric, fetchedAt, ui.race, max], getFillColor: [ui.metric, fetchedAt, ui.race] },
+      transitions: { getElevation: 350 } }),
+  ];
+}
+
+function renderSide(rs) {
+  const cfg = B[ui.race], s = summary(ui.race, rs), st = s.st, dn = last(cfg.model.d), rn = last(cfg.model.r);
+  const m = st && st.dv + st.rv ? 100 * (st.dv - st.rv) / st.tot : null;
+  let h = `<h3>Mississippi ${esc(cfg.label)}: ${esc(cfg.model.d)} vs ${esc(cfg.model.r)}</h3><div class="kv">`;
+  h += `<span>Counted</span><b>${st ? st.eevp.toFixed(0) + "% · " + fmtInt(st.tot) + " votes" : "–"}</b>`;
+  h += `<span>Margin now</span><b class="${cls(m)}">${lead(m, cfg)}</b>`;
+  h += `<span>Our model (before the count)</span><b class="${cls(cfg.model.d_margin)}">${lead(cfg.model.d_margin, cfg)}</b>`;
+  h += `<span>Counted counties point to</span><b class="${cls(s.implied)}">${lead(s.implied, cfg)}</b>`;
+  h += `<span>Net vs expected (counted)</span><b class="${cls(s.net)}">${s.n ? (s.net >= 0 ? esc(dn) : esc(rn)) + " +" + fmtInt(Math.abs(s.net)) : "–"}</b>`;
+  h += `<span>Counties reporting / finished</span><b>${s.n} / ${s.done} of ${rs.length}</b></div>`;
+  h += `<p class="note" style="margin:0">"Point to": the one statewide swing that fits the counted counties best, applied to every county. Mississippi has no early voting, so the count is mostly election-day votes; watch Hinds (Jackson) and the Delta counties for the Democrat, DeSoto, Rankin and Madison for the Republican. A third candidate (Pinkins) takes some votes; shares here are Colom vs Hyde-Smith only.</p>`;
+  const key = rs.slice().sort((a, b) => b.w - a.w).slice(0, KEY_N);
+  const top = key.reduce((a, c) => a + c.w, 0);
+  h += `<h4>Counties that matter</h4><p class="note" style="margin:0">The ${KEY_N} biggest hold ${(100 * top).toFixed(0)}% of the state's vote. + = ${esc(dn)} ahead of expectation. Hover a row to find it on the map.</p>`;
+  h += `<table><thead><tr><th>County</th><th>Of state</th><th>Counted</th><th>Margin</th><th>Over/under</th><th>Net</th><th>Left</th></tr></thead><tbody>`;
+  for (const c of key) {
+    const mm = c.share != null ? 100 * (2 * c.share - 1) : null;
+    h += `<tr data-f="${c.f}"><td>${esc(c.n)}</td><td>${(100 * c.w).toFixed(1)}%</td><td>${c.pct.toFixed(0)}%</td>` +
+      `<td class="${cls(mm)}">${mm == null ? "–" : (mm > 0 ? "D+" : "R+") + Math.abs(mm).toFixed(1)}</td>` +
+      `<td class="${c.dev == null ? "" : cls(c.dev)}">${c.dev == null ? "–" : (c.dev >= 0 ? "+" : "−") + Math.abs(c.dev).toFixed(1)}</td>` +
+      `<td class="${c.net == null ? "" : cls(c.net)}">${c.net == null ? "–" : (c.net >= 0 ? "+" : "−") + fmtInt(Math.abs(c.net))}</td><td>${fmtInt(c.left)}</td></tr>`;
+  }
+  h += `</tbody></table><p class="note" style="margin:0">Separate from the data desk. Count: NYT, every 60 s. Model: the margin model's 2026 forecast.</p>`;
+  document.getElementById("side").innerHTML = h;
+}
+
+function render(refit) {
+  const cfg = B[ui.race], rs = rows(ui.race);
+  document.getElementById("races").innerHTML = Object.entries(B).map(([k, v]) => `<button data-race="${k}" aria-pressed="${ui.race === k}">${esc(v.label)}</button>`).join("");
+  document.getElementById("legend").innerHTML =
+    `<span><i style="background:rgb(${C_R})"></i>${esc(last(cfg.model.r))} ahead of our model (${OU_FULL}+ pts)</span>` +
+    `<span><i style="background:rgb(64,70,84)"></i>as expected</span><span><i style="background:rgb(${C_D})"></i>${esc(last(cfg.model.d))} ahead (${OU_FULL}+ pts)</span>` +
+    `<span><i style="background:rgb(34,41,52)"></i>not reporting</span><span>Faded: under 95% counted · drag to rotate, scroll to zoom</span>`;
+  renderSide(rs);
+  if (!FIT || refit) FIT = fit();
+  if (!DECK) {
+    DECK = new window.deck.Deck({ parent: document.getElementById("deckmap"), views: new window.deck.OrbitView({ orbitAxis: "Z", fovy: 35 }),
+      initialViewState: { ...FIT, minZoom: -3, maxZoom: 9 }, controller: true, layers: layers(rs),
+      getTooltip: ({ object }) => object ? { html: `<div class="ctip">${tipHtml(object.c || object, cfg)}</div>`,
+        style: { background: "#131922", color: "#e7ebf1", border: "1px solid #2f3a4a", borderRadius: "6px", padding: "9px 11px", width: "320px" } } : null });
+  } else DECK.setProps({ layers: layers(rs), getTooltip: ({ object }) => object ? { html: `<div class="ctip">${tipHtml(object.c || object, cfg)}</div>`,
+        style: { background: "#131922", color: "#e7ebf1", border: "1px solid #2f3a4a", borderRadius: "6px", padding: "9px 11px", width: "320px" } } : null });
+  const lv = LIVE && LIVE[ui.race];
+  document.getElementById("status").innerHTML = lastErr ? `<span class="err">${esc(lastErr)}</span>` :
+    fetchedAt ? `checked <b>${etTime(fetchedAt)}</b>${lv && lv.updated ? " · NYT updated " + etTime(new Date(lv.updated)) : ""}` : "loading…";
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(NYT + "?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) throw new Error("NYT " + r.status);
+    LIVE = parse(await r.json()); fetchedAt = new Date(); lastErr = null;
+  } catch (e) { lastErr = "Couldn't reach NYT (" + e.message + "), showing the last count"; }
+  render(false);
+}
+document.getElementById("races").addEventListener("click", e => { const b = e.target.closest("button[data-race]"); if (b) { ui.race = b.dataset.race; render(false); } });
+document.getElementById("metric").addEventListener("change", e => { ui.metric = e.target.value; render(false); });
+document.getElementById("side").addEventListener("mouseover", e => { const t = e.target.closest("tr[data-f]"); if (t && ui.hl !== t.dataset.f) { ui.hl = t.dataset.f; render(false); } });
+document.getElementById("side").addEventListener("mouseleave", () => { if (ui.hl) { ui.hl = null; render(false); } });
+window.addEventListener("resize", () => { if (DECK) { FIT = fit(); DECK.setProps({ initialViewState: { ...FIT, minZoom: -3, maxZoom: 9 } }); } });
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
