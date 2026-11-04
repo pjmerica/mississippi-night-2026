@@ -1,0 +1,43 @@
+name: Mississippi live
+
+# night.py every 30 s: NYT's count, the county projector from our margin model, Kalshi/Polymarket books and edges,
+# written to live.json on the orphan branch `live` (one commit, amended and force-pushed). index.html reads it.
+# Start: gh workflow run night.yml   Stop: gh run cancel <id>
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'job length, minutes'
+        default: '340'
+
+concurrency:
+  group: live
+  cancel-in-progress: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install numpy
+      - name: Check out the live branch
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$url" live >/dev/null; then
+            git clone -q --depth 1 --branch live "$url" state
+          else
+            git init -q -b live state
+            git -C state remote add origin "$url"
+          fi
+          git -C state config user.name "mississippi-live"
+          git -C state config user.email "actions@users.noreply.github.com"
+      - run: python night.py --minutes "${{ inputs.minutes || 340 }}" --state state
