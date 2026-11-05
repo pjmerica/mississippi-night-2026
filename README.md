@@ -28,3 +28,7 @@ other), taker fees, edge after fee, the desk's FLIP rule, and two charts over th
 The job runs through Dec 14 (a pass every 60 s; each job dispatches the next, and a cron restarts it if one dies). `live.json`
 keeps a history row whenever the count, projection or a price moved. The raw NYT file for every change is recorded by
 polling-agg's cloud job in the release `election-night-2026`.
+
+## The record, kept for good
+
+The branch `live` is one commit, amended and force-pushed every pass, so it has no history. At the end of every job the workflow copies everything on it to the branch `record` and commits it there (files are added or updated, never removed). `record` is protected against force-pushes and deletion, so its history holds every copy of the night and the late count. Started 2026-11-05 (user: the record must be saved forever); the first commit is a copy taken by hand that day.
